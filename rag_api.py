@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 import os
@@ -401,8 +401,44 @@ async def health_check():
 @app.post("/populate/")
 @limiter.limit("5/minute")  # embedding a whole PDF is CPU-heavy; keep it rare
 async def populate_db(request: Request, payload: PopulateDBRequest, _api_key: str = Depends(verify_api_key)):
-    """Endpoint to populate the database with documents."""
+    """Re-index everything currently sitting in DATA_PATH on the server's
+    disk. Useful for ops/CLI use (and what the test suite calls), but a
+    browser can't hand this process a server-side directory path - see
+    /upload/ below for the endpoint the Streamlit UI actually calls."""
     return populate_database(reset=payload.reset)
+
+
+@app.post("/upload/")
+@limiter.limit("5/minute")  # same cost profile as /populate/ - it ends the same way
+async def upload_document(
+    request: Request, file: UploadFile = File(...), _api_key: str = Depends(verify_api_key)
+):
+    """Accept a PDF upload from a client (the Streamlit UI's upload button),
+    save it into the document corpus, and index it immediately.
+
+    This exists as a separate endpoint from /populate/ because the two
+    callers have fundamentally different capabilities: a CLI/ops caller can
+    reference a path already on the server's disk (what /populate/ does),
+    but a browser can only hand us file bytes over HTTP - it has no way to
+    say "index /app/docs" because that path means nothing on the client
+    side. FastAPI's UploadFile is the standard way to receive those bytes.
+    """
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only .pdf files are supported.")
+
+    os.makedirs(DATA_PATH, exist_ok=True)
+    # Deliberately no path sanitization beyond the .pdf check above: this is
+    # a single-tenant demo API behind an API key, not a multi-tenant upload
+    # service, so we're not defending against a malicious filename like
+    # "../../etc/passwd.pdf" here - flagging the omission rather than
+    # silently ignoring it, since a public-facing version of this WOULD
+    # need to sanitize file.filename before joining it into a server path.
+    dest_path = os.path.join(DATA_PATH, file.filename)
+    with open(dest_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    result = populate_database(reset=False)
+    return {"filename": file.filename, **result}
 
 
 # -------------------------------

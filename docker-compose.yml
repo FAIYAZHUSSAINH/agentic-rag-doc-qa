@@ -26,6 +26,16 @@ services:
     build: .
     ports:
       - "8000:8000"
+    volumes:
+      # Phase 5 added POST /upload/, which writes PDFs into DATA_PATH
+      # ("docs/") on whatever filesystem this process sees. Without this
+      # mount that's the container's own ephemeral layer - anything
+      # uploaded through the Streamlit UI would vanish on the next
+      # `docker compose up` (image rebuild) or container recreation. This
+      # bind-mounts the same docs/ folder used by bare-metal dev, so
+      # uploads persist and both environments end up looking at the same
+      # documents.
+      - ./docs:/app/docs
     # Shares the same .env file used for bare-metal dev (API_KEY,
     # TAVILY_API_KEY, SIMILARITY_THRESHOLD, ...) so secrets/tuning values
     # are defined once, not duplicated between environments.

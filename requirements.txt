@@ -23,6 +23,7 @@
 fastapi>=0.115,<0.116
 uvicorn[standard]>=0.34,<0.35
 pydantic>=2.10,<3
+python-multipart>=0.0.9   # required by FastAPI to parse file uploads (/upload/, Phase 5)
 
 # --- RAG orchestration ---
 # Pinned to the 0.2.x line (not the current 0.3.x) because the existing code
@@ -47,9 +48,15 @@ pypdf>=5.2.0
 # --- Cosine similarity for /compare/ ---
 scikit-learn>=1.6
 
-# --- Demo UI (app.py, reused/extended in Phase 5) ---
+# --- Demo UI (Phase 5) ---
+# streamlit-chat (a third-party component) was dropped: Streamlit itself
+# has shipped native st.chat_message/st.chat_input since 1.24 - one fewer
+# dependency, and it's maintained as core Streamlit rather than a
+# community package that can lag behind Streamlit API changes.
 streamlit>=1.42
-streamlit-chat==0.1.1
+# app.py talks to rag_api.py purely over HTTP (see its module docstring for
+# why) using httpx, already a direct dependency above - reusing it here
+# instead of adding `requests` as a second HTTP client library.
 
 # --- Misc ---
 tqdm>=4.67
