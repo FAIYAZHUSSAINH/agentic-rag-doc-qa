@@ -61,6 +61,12 @@ slowapi>=0.1.9             # per-route rate limiting (Flask-Limiter, ported to F
 httpx>=0.27                # used directly by /health/ to ping Ollama; also what
                             # FastAPI's TestClient needs under the hood for tests
 
+# --- Agentic / Corrective RAG (Phase 3) ---
+# Official SDK over a hand-rolled httpx call to Tavily's REST API: it owns
+# the request/response contract (auth header format, param names) so this
+# code doesn't silently break if Tavily changes an implementation detail.
+tavily-python>=0.7
+
 # chromadb needs SQLite >= 3.35. Some Linux base images (e.g. Debian slim,
 # which we'll use for the Docker image in Phase 4) ship an older system
 # sqlite3 than that. pysqlite3-binary bundles a modern SQLite as a drop-in

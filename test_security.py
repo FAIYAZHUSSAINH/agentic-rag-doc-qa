@@ -39,7 +39,19 @@ class _FakeDB:
 
 
 class _FakeModel:
+    """Fake Ollama LLM. Phase 3 added a second LLM call inside /query/ (the
+    context-sufficiency check, which asks a yes/no question with a
+    distinctive instruction string) before the final answer generation
+    call. This has to answer that one with "YES" - otherwise the (real,
+    unmocked) Corrective RAG logic would decide the context is
+    insufficient and reach for the real Tavily web-search call, which
+    would make these "fast, offline, mocked" tests silently hit the
+    network. See test_corrective_rag.py for tests that exercise the
+    fallback path on purpose, with web_search() itself mocked too.
+    """
     def invoke(self, prompt):
+        if "Answer with exactly one word" in prompt:
+            return "YES"
         return "fake answer"
 
 

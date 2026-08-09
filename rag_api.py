@@ -32,6 +32,7 @@ from langchain_community.llms.ollama import Ollama
 from sklearn.metrics.pairwise import cosine_similarity
 from embedding_function import get_embedding_function
 from create_db import calculate_chunk_ids
+from web_search import web_search
 
 from dotenv import load_dotenv
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -109,8 +110,23 @@ def verify_api_key(provided_key: str | None = Depends(api_key_header)):
 # (PermissionError) or leaves the client pointed at now-nonexistent files.
 # Building a fresh client per call (matching the pattern already used in
 # create_db.py and query.py) avoids holding a long-lived handle at all.
+#
+# collection_metadata={"hnsw:space": "cosine"} (Phase 3): Chroma's default
+# distance function is raw squared L2 (Euclidean) distance - unbounded
+# above 0, where the "good" range depends on the embedding model's vector
+# magnitudes. That makes a retrieval-quality threshold nearly impossible to
+# pick or justify without extensive tuning. Cosine distance is bounded and
+# has a standard, portable interpretation (cosine_similarity = 1 - cosine
+# distance, roughly 0=unrelated to 1=near-identical for text embeddings),
+# which is what SIMILARITY_THRESHOLD below assumes. This only takes effect
+# when a collection is first CREATED - changing it later needs a fresh
+# /populate/ reset=True, which is why Phase 3 needs one clean re-populate.
 def get_db() -> Chroma:
-    return Chroma(persist_directory=CHROMA_PATH, embedding_function=get_embedding_function())
+    return Chroma(
+        persist_directory=CHROMA_PATH,
+        embedding_function=get_embedding_function(),
+        collection_metadata={"hnsw:space": "cosine"},
+    )
 
 PROMPT_TEMPLATE = """
 Answer the question based only on the following context:
@@ -121,6 +137,92 @@ Answer the question based only on the following context:
 
 Answer the question based on the above context: {question}
 """
+
+# ---------------------------------------------------------------------------
+# Corrective RAG (Phase 3) configuration
+# ---------------------------------------------------------------------------
+# SIMILARITY_THRESHOLD was measured empirically on this corpus (the
+# ConocoPhillips proxy statement) with nomic-embed-text + cosine distance,
+# not guessed: on-topic queries ("board of directors' compensation",
+# "what is the company name?") scored 0.56-0.66 top-chunk similarity;
+# clearly off-topic queries ("pizza recipe", "training a puppy") scored
+# 0.43-0.49. 0.5 sits in the gap and correctly separated all four samples -
+# though the margin was sometimes slim (as little as 0.005), which is a
+# realistic finding: embedding similarity is a noisy, topical relevance
+# signal, not a precise one. That slim margin is exactly why the LLM
+# sufficiency check below exists as a second, more expensive but more
+# precise layer, rather than trusting this number alone. A different
+# corpus (more/less topically diverse) would likely need a re-tuned
+# threshold - hence this being a runtime env var, not a hardcoded literal.
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.5"))
+
+# Lets you turn the web fallback off entirely (e.g. offline dev, or a
+# deployment that intentionally never wants to leave the local corpus)
+# without touching code.
+WEB_FALLBACK_ENABLED = os.getenv("WEB_FALLBACK_ENABLED", "true").lower() == "true"
+WEB_SEARCH_MAX_RESULTS = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "3"))
+
+# Unlike SIMILARITY_THRESHOLD, the sufficiency prompt is a Python constant,
+# not an env var. Reasoning: a numeric threshold is an ops knob you might
+# reasonably retune per-deployment/corpus without touching code; a prompt
+# is program logic whose exact wording changes model behavior and belongs
+# in code review and git history, not a silent runtime string swap that
+# leaves no diff and no reviewer.
+SUFFICIENCY_CHECK_PROMPT_TEMPLATE = """You are checking whether the given context contains enough information to answer the question.
+
+Context:
+{context}
+
+Question: {question}
+
+Does the context above contain enough information to answer the question? Answer with exactly one word, "YES" or "NO", and nothing else."""
+
+
+def _check_context_sufficiency(context_text: str, question: str) -> bool:
+    """Ask the LLM whether the retrieved context actually answers the
+    question - a check embedding similarity can't make on its own.
+    Similarity measures topical closeness ("this chunk is about the same
+    subject"), not whether it states the specific fact being asked for -
+    e.g. a chunk about "executive compensation policy" can score high
+    similarity against "what is the CEO's salary?" while never actually
+    naming a number. This is the second, more precise (but slower/costlier)
+    layer of the two-stage relevance check.
+    """
+    prompt = SUFFICIENCY_CHECK_PROMPT_TEMPLATE.format(context=context_text, question=question)
+    model = Ollama(model="mistral")
+    result = model.invoke(prompt).strip().lower()
+    if "yes" in result:
+        return True
+    if "no" in result:
+        return False
+    # Rare with a small local model, but if the response is neither, fail
+    # toward MORE context rather than less: treat it as insufficient so we
+    # augment with web results instead of silently under-answering.
+    return False
+
+
+def _run_web_fallback(query_text: str) -> tuple[str, list[str]]:
+    """Fetch web results and format them to match the local-chunk context
+    format (joined by "---"), so the final prompt treats both sources
+    uniformly. Returns (context_text, source_urls).
+
+    Any failure here (missing/invalid TAVILY_API_KEY, network error,
+    Tavily downtime) is caught and degrades to "no web context" rather than
+    propagating - a broken web fallback should mean "answer from local
+    context alone, if any", not a 500 for the whole /query/ request.
+    """
+    try:
+        results = web_search(query_text, max_results=WEB_SEARCH_MAX_RESULTS)
+    except Exception as exc:
+        print(f"Web fallback failed, continuing without it: {exc}")
+        return "", []
+
+    if not results:
+        return "", []
+
+    context_text = "\n\n---\n\n".join(f"{r['title']}\n{r['snippet']}" for r in results)
+    urls = [r["url"] for r in results]
+    return context_text, urls
 
 
 # -------------------------------
@@ -238,14 +340,49 @@ async def populate_db(request: Request, payload: PopulateDBRequest, _api_key: st
 @app.post("/query/")
 @limiter.limit("15/minute")  # the main hot path, but still LLM-bound - keep modest
 async def query_rag(request: Request, payload: QueryRequest, _api_key: str = Depends(verify_api_key)):
-    """Search for relevant documents and generate a response."""
-    # Search the DB
+    """Search for relevant documents, correct for low-quality retrieval by
+    falling back to live web search when needed, and generate a response.
+
+    Corrective RAG flow:
+      1. Retrieve top-k chunks + cosine similarity from Chroma.
+      2. If the best score is below SIMILARITY_THRESHOLD, skip straight to
+         web fallback - running the (slower, LLM-based) sufficiency check
+         would just be a redundant extra call to confirm what the numbers
+         already show clearly enough.
+      3. Otherwise, ask the LLM whether the retrieved context actually
+         answers the question - a check similarity alone can't make (see
+         _check_context_sufficiency's docstring for why).
+      4. If either check fails, fetch live web results and merge them into
+         the context before generating the final answer, so a bad/missing
+         local match doesn't mean a bad/missing answer.
+    """
     results = get_db().similarity_search_with_score(payload.query_text, k=5)
 
-    if not results:
-        raise HTTPException(status_code=404, detail="No relevant documents found.")
+    doc_context = "\n\n---\n\n".join(doc.page_content for doc, _distance in results) if results else ""
+    doc_sources = [doc.metadata.get("id", "Unknown") for doc, _distance in results]
+    # Chroma returns cosine DISTANCE (0=identical) because get_db() creates
+    # the collection with hnsw:space="cosine" - similarity is 1 - distance.
+    top_similarity = (1 - results[0][1]) if results else 0.0
 
-    context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
+    needs_fallback = top_similarity < SIMILARITY_THRESHOLD
+    context_sufficient = None  # None = sufficiency check was skipped entirely
+    if not needs_fallback:
+        context_sufficient = _check_context_sufficiency(doc_context, payload.query_text)
+        needs_fallback = not context_sufficient
+
+    context_text = doc_context
+    web_sources = []
+    answer_source = "documents"
+
+    if needs_fallback and WEB_FALLBACK_ENABLED:
+        web_context, web_sources = _run_web_fallback(payload.query_text)
+        if web_context:
+            context_text = f"{doc_context}\n\n---\n\n{web_context}" if doc_context else web_context
+            answer_source = "documents+web" if doc_context else "web_fallback"
+
+    if not context_text:
+        raise HTTPException(status_code=404, detail="No relevant documents or web results found.")
+
     prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
     prompt = prompt_template.format(context=context_text, question=payload.query_text)
 
@@ -254,11 +391,18 @@ async def query_rag(request: Request, payload: QueryRequest, _api_key: str = Dep
     model = Ollama(model="mistral")
     response_text = model.invoke(prompt)
 
-    sources = [doc.metadata.get("id", "Unknown") for doc, _ in results]
-
     return {
         "response": response_text,
-        "sources": sources
+        "sources": doc_sources,
+        "web_sources": web_sources,
+        # Phase 5's Streamlit UI shows this directly so users can see
+        # whether an answer came from the uploaded documents or the web.
+        "answer_source": answer_source,
+        "retrieval_debug": {
+            "top_similarity": round(top_similarity, 4),
+            "similarity_threshold": SIMILARITY_THRESHOLD,
+            "context_sufficient": context_sufficient,
+        },
     }
 
 

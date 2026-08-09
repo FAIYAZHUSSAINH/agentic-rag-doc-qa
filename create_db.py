@@ -61,8 +61,15 @@ def split_documents(documents: list[Document]):
 
 def add_to_chroma(chunks: list[Document], streamlit_flag=False):
     # Load the existing database.
+    # collection_metadata matches rag_api.py's get_db() (see the comment
+    # there) - both files point at the same on-disk collection, and Chroma
+    # only honors this metadata the first time a collection is created, so
+    # it needs to be consistent everywhere or whichever code path runs
+    # first silently wins.
     db = Chroma(
-        persist_directory=CHROMA_PATH, embedding_function=get_embedding_function()
+        persist_directory=CHROMA_PATH,
+        embedding_function=get_embedding_function(),
+        collection_metadata={"hnsw:space": "cosine"},
     )
 
     # Assign unique IDs to document chunks
