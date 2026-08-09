@@ -24,6 +24,7 @@ try:
     sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
 except ImportError:
     pass
+import chromadb
 from langchain.vectorstores import Chroma
 from langchain.document_loaders.pdf import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -53,10 +54,38 @@ CHROMA_PATH = "chroma"
 # pointed at a directory that doesn't exist, so /populate/ silently produced
 # zero chunks. Matching create_db.py's DATA_PATH here.
 DATA_PATH = "docs"
-# Ollama's HTTP API address. Configurable because it changes between
-# environments: localhost during bare-metal dev, but the Docker Compose
-# service name ("http://ollama:11434") once we containerize in Phase 4.
+# Ollama's HTTP API address. We deliberately do NOT containerize Ollama
+# itself in Phase 4 (see docker-compose.yml comments) - it stays on the
+# host, so this points at localhost for bare-metal dev but needs
+# "http://host.docker.internal:11434" when the app itself runs inside
+# Docker, since "localhost" inside a container means the container, not
+# the host machine.
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# ---------------------------------------------------------------------------
+# Chroma deployment mode (Phase 4).
+# "local"  - embedded/persistent mode: Chroma runs in-process and writes
+#            straight to a directory on disk (CHROMA_PATH). Zero extra
+#            moving parts - simplest option for solo bare-metal dev.
+# "http"   - standalone server mode: Chroma runs as its own process (the
+#            docker-compose "chroma" service) and this app talks to it over
+#            HTTP like any other network service. This is what lets the
+#            vector DB survive independently of the app container, be
+#            scaled/restarted separately, and be inspected/backed up on its
+#            own - the more "real deployment" shape, which is why
+#            docker-compose.yml switches to it via this same env var rather
+#            than needing a second code path.
+# One codebase, one flag - not two divergent implementations to keep in
+# sync - was the deciding factor over hardcoding one mode or the other.
+# ---------------------------------------------------------------------------
+CHROMA_MODE = os.getenv("CHROMA_MODE", "local")
+CHROMA_HTTP_HOST = os.getenv("CHROMA_HTTP_HOST", "chroma")
+CHROMA_HTTP_PORT = int(os.getenv("CHROMA_HTTP_PORT", "8000"))
+# LangChain's Chroma wrapper uses this fixed name when no collection_name
+# is passed - true everywhere in this repo, so clear_database()'s HTTP-mode
+# branch needs to know it explicitly (there's no "delete the directory"
+# equivalent when Chroma is a remote server).
+DEFAULT_COLLECTION_NAME = "langchain"
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -122,6 +151,13 @@ def verify_api_key(provided_key: str | None = Depends(api_key_header)):
 # when a collection is first CREATED - changing it later needs a fresh
 # /populate/ reset=True, which is why Phase 3 needs one clean re-populate.
 def get_db() -> Chroma:
+    if CHROMA_MODE == "http":
+        client = chromadb.HttpClient(host=CHROMA_HTTP_HOST, port=CHROMA_HTTP_PORT)
+        return Chroma(
+            client=client,
+            embedding_function=get_embedding_function(),
+            collection_metadata={"hnsw:space": "cosine"},
+        )
     return Chroma(
         persist_directory=CHROMA_PATH,
         embedding_function=get_embedding_function(),
@@ -189,7 +225,9 @@ def _check_context_sufficiency(context_text: str, question: str) -> bool:
     layer of the two-stage relevance check.
     """
     prompt = SUFFICIENCY_CHECK_PROMPT_TEMPLATE.format(context=context_text, question=question)
-    model = Ollama(model="mistral")
+    # base_url=OLLAMA_BASE_URL: same fix as embedding_function.py - Ollama()
+    # defaults to localhost:11434, which is wrong inside the Docker container.
+    model = Ollama(model="mistral", base_url=OLLAMA_BASE_URL)
     result = model.invoke(prompt).strip().lower()
     if "yes" in result:
         return True
@@ -245,8 +283,17 @@ class PopulateDBRequest(BaseModel):
 # 📌 Database Population
 # -------------------------------
 def clear_database():
-    """Delete existing ChromaDB directory."""
-    if os.path.exists(CHROMA_PATH):
+    """Reset the vector store. In local mode that's a directory to delete;
+    in HTTP mode there's no directory to touch from here at all - the
+    Chroma server owns its own storage - so we ask it to delete the
+    collection over the API instead."""
+    if CHROMA_MODE == "http":
+        client = chromadb.HttpClient(host=CHROMA_HTTP_HOST, port=CHROMA_HTTP_PORT)
+        try:
+            client.delete_collection(DEFAULT_COLLECTION_NAME)
+        except Exception:
+            pass  # collection doesn't exist yet (e.g. first-ever populate) - nothing to clear
+    elif os.path.exists(CHROMA_PATH):
         shutil.rmtree(CHROMA_PATH)
 
 
@@ -292,7 +339,16 @@ def populate_database(reset=False):
     if new_chunks:
         new_ids = [c.metadata["id"] for c in new_chunks]
         db.add_documents(new_chunks, ids=new_ids)
-        db.persist()
+        # BUG FIX (Phase 4): .persist() behaves differently depending on how
+        # the Chroma object was built. In local mode (persist_directory=...)
+        # it's a harmless deprecated no-op (writes are already auto-synced
+        # to disk). In HTTP mode (client=HttpClient(...)) it hard-raises
+        # ValueError("You must specify a persist_directory...") - the
+        # remote Chroma SERVER owns persistence entirely, so there is
+        # nothing for the client to do here at all. Only call it in the
+        # mode where it's meaningful.
+        if CHROMA_MODE != "http":
+            db.persist()
 
     return {
         "message": f"Database populated with {len(new_chunks)} new chunks "
@@ -321,10 +377,25 @@ async def health_check():
     except httpx.RequestError:
         ollama_ok = False
 
-    return {
+    result = {
         "status": "ok" if ollama_ok else "degraded",
         "ollama_reachable": ollama_ok,
     }
+
+    # In local (embedded) mode there's no separate Chroma process to check -
+    # it lives inside this one. In HTTP mode (Docker) it's a real network
+    # dependency worth surfacing here, same reasoning as the Ollama check.
+    if CHROMA_MODE == "http":
+        chroma_ok = False
+        try:
+            chromadb.HttpClient(host=CHROMA_HTTP_HOST, port=CHROMA_HTTP_PORT).heartbeat()
+            chroma_ok = True
+        except Exception:
+            chroma_ok = False
+        result["chroma_reachable"] = chroma_ok
+        result["status"] = "ok" if (ollama_ok and chroma_ok) else "degraded"
+
+    return result
 
 
 @app.post("/populate/")
@@ -388,7 +459,9 @@ async def query_rag(request: Request, payload: QueryRequest, _api_key: str = Dep
 
     print(f"Generated prompt: {prompt}")
 
-    model = Ollama(model="mistral")
+    # base_url=OLLAMA_BASE_URL: same fix as embedding_function.py - Ollama()
+    # defaults to localhost:11434, which is wrong inside the Docker container.
+    model = Ollama(model="mistral", base_url=OLLAMA_BASE_URL)
     response_text = model.invoke(prompt)
 
     return {

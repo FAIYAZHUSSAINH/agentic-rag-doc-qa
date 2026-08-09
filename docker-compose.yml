@@ -1,0 +1,68 @@
+services:
+  # Standalone ChromaDB server (Phase 4). Bare-metal dev uses Chroma in
+  # embedded mode (a local directory, see CHROMA_MODE in rag_api.py) - here
+  # it's its own container/service instead, which is the more "real
+  # deployment" shape: the vector DB can be restarted, backed up, or scaled
+  # independently of the API, and other services could talk to it too.
+  chroma:
+    # Pinned to match the chromadb PYTHON CLIENT version this project
+    # actually installs (chromadb>=0.5.0,<0.6 in requirements.txt resolved
+    # to 0.5.4 locally - confirmed with `pip show chromadb`). Client and
+    # server need to speak the same protocol version; an unpinned "latest"
+    # server image is a classic source of confusing errors that have
+    # nothing to do with your application code.
+    image: chromadb/chroma:0.5.4
+    volumes:
+      - chroma_data:/chroma/chroma
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    # Shares the same .env file used for bare-metal dev (API_KEY,
+    # TAVILY_API_KEY, SIMILARITY_THRESHOLD, ...) so secrets/tuning values
+    # are defined once, not duplicated between environments.
+    env_file:
+      - .env
+    environment:
+      # Overrides for the handful of values that differ specifically
+      # because we're in Docker now - everything else still comes from
+      # the shared .env file above.
+      CHROMA_MODE: http
+      CHROMA_HTTP_HOST: chroma
+      CHROMA_HTTP_PORT: "8000"
+      # "localhost" inside this container means the container itself, not
+      # the host machine where Ollama actually runs (we deliberately don't
+      # containerize Ollama - see the note below). host.docker.internal is
+      # Docker's DNS name for "the host machine".
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      # host.docker.internal resolves automatically on Docker Desktop
+      # (Windows/Mac). This line is what makes the same compose file also
+      # work unmodified on native Linux Docker, which doesn't define it by
+      # default.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      chroma:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
+
+# NOTE on Ollama: intentionally not a service in this file. Mistral alone
+# is a ~4.4GB model; containerizing Ollama would mean re-downloading it
+# into a Docker volume (or a much larger image) and dealing with GPU
+# passthrough configuration for anyone who has a GPU, for zero benefit in a
+# single-machine demo - Ollama already runs perfectly well on the host,
+# and both the FastAPI app (via OLLAMA_BASE_URL above) and bare-metal dev
+# talk to that same one installation. A production deployment serving
+# multiple app instances would likely containerize Ollama too; that's a
+# real tradeoff being made here, not an oversight.

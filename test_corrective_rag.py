@@ -70,7 +70,7 @@ def test_high_similarity_and_sufficient_context_skips_web_fallback(client, monke
     """The common case: a good local match. No web call should happen at
     all - monkeypatching web_search to raise proves it was never called."""
     monkeypatch.setattr(rag_api, "get_db", lambda: _FakeDB(distance=0.1))  # similarity 0.9
-    monkeypatch.setattr(rag_api, "Ollama", lambda model=None: _YesModel())
+    monkeypatch.setattr(rag_api, "Ollama", lambda model=None, **kwargs: _YesModel())
     monkeypatch.setattr(rag_api, "web_search", lambda *a, **kw: (_ for _ in ()).throw(
         AssertionError("web_search should not be called when local context is good")
     ))
@@ -91,7 +91,7 @@ def test_low_similarity_skips_sufficiency_check_and_falls_back_to_web(client, mo
     should fire directly - proven by _NoModel never being asked to check
     sufficiency, only used for the final answer."""
     monkeypatch.setattr(rag_api, "get_db", lambda: _FakeDB(distance=0.9))  # similarity 0.1
-    monkeypatch.setattr(rag_api, "Ollama", lambda model=None: _NoModel())
+    monkeypatch.setattr(rag_api, "Ollama", lambda model=None, **kwargs: _NoModel())
     monkeypatch.setattr(
         rag_api,
         "web_search",
@@ -114,7 +114,7 @@ def test_high_similarity_but_insufficient_context_falls_back_to_web(client, monk
     """Similarity alone isn't enough: a topically-close chunk that doesn't
     actually answer the question should still trigger fallback."""
     monkeypatch.setattr(rag_api, "get_db", lambda: _FakeDB(distance=0.1))  # similarity 0.9
-    monkeypatch.setattr(rag_api, "Ollama", lambda model=None: _NoModel())
+    monkeypatch.setattr(rag_api, "Ollama", lambda model=None, **kwargs: _NoModel())
     monkeypatch.setattr(
         rag_api,
         "web_search",
@@ -136,7 +136,7 @@ def test_web_fallback_failure_degrades_to_local_context_instead_of_500(client, m
     should just mean "answer from local context alone", per
     _run_web_fallback's docstring."""
     monkeypatch.setattr(rag_api, "get_db", lambda: _FakeDB(distance=0.9))  # similarity 0.1, needs fallback
-    monkeypatch.setattr(rag_api, "Ollama", lambda model=None: _YesModel())
+    monkeypatch.setattr(rag_api, "Ollama", lambda model=None, **kwargs: _YesModel())
 
     def _broken_web_search(*args, **kwargs):
         raise RuntimeError("TAVILY_API_KEY is not set")

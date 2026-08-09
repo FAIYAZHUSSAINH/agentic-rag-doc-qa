@@ -61,7 +61,7 @@ def _patch_heavy_dependencies(monkeypatch):
     slowapi's in-memory rate-limit counters before every test so one test's
     requests can't push another test over its limit."""
     monkeypatch.setattr(rag_api, "get_db", lambda: _FakeDB())
-    monkeypatch.setattr(rag_api, "Ollama", lambda model=None: _FakeModel())
+    monkeypatch.setattr(rag_api, "Ollama", lambda model=None, **kwargs: _FakeModel())
     rag_api.limiter.reset()
 
 

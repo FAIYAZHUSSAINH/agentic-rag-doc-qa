@@ -1,0 +1,13 @@
+# Never bake secrets or machine-specific state into the image.
+.env
+venv/
+chroma/
+.git/
+.gitignore
+
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Streamlit's local cache/config, if present
+.streamlit/
