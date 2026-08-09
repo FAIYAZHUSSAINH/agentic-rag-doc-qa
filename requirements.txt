@@ -55,6 +55,12 @@ streamlit-chat==0.1.1
 tqdm>=4.67
 pytest>=8.3
 
+# --- Security & ops (Phase 2) ---
+python-dotenv>=1.0        # loads .env into os.environ
+slowapi>=0.1.9             # per-route rate limiting (Flask-Limiter, ported to FastAPI)
+httpx>=0.27                # used directly by /health/ to ping Ollama; also what
+                            # FastAPI's TestClient needs under the hood for tests
+
 # chromadb needs SQLite >= 3.35. Some Linux base images (e.g. Debian slim,
 # which we'll use for the Docker image in Phase 4) ship an older system
 # sqlite3 than that. pysqlite3-binary bundles a modern SQLite as a drop-in

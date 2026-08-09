@@ -1,6 +1,8 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 import os
+import secrets
 import shutil
 import sys
 
@@ -31,6 +33,18 @@ from sklearn.metrics.pairwise import cosine_similarity
 from embedding_function import get_embedding_function
 from create_db import calculate_chunk_ids
 
+from dotenv import load_dotenv
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+import httpx
+
+# Reads .env into os.environ (API_KEY, OLLAMA_BASE_URL, ...) if the file
+# exists. In Docker (Phase 4) these are passed as real container env vars
+# instead, so this is a no-op there - same code works in both places.
+load_dotenv()
+
 # Constants
 CHROMA_PATH = "chroma"
 # BUG FIX: this was "data", but the PDFs that ship with the repo live in
@@ -38,9 +52,53 @@ CHROMA_PATH = "chroma"
 # pointed at a directory that doesn't exist, so /populate/ silently produced
 # zero chunks. Matching create_db.py's DATA_PATH here.
 DATA_PATH = "docs"
+# Ollama's HTTP API address. Configurable because it changes between
+# environments: localhost during bare-metal dev, but the Docker Compose
+# service name ("http://ollama:11434") once we containerize in Phase 4.
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # Initialize FastAPI app
 app = FastAPI()
+
+# ---------------------------------------------------------------------------
+# Rate limiting (slowapi - a FastAPI/Starlette port of the well-known
+# Flask-Limiter). Keyed by client IP via get_remote_address(), which is
+# fine for a single-instance demo behind no proxy. Behind a real load
+# balancer you'd key off a forwarded-for header or the API key itself
+# instead, so one noisy tenant sharing an IP/NAT can't exhaust everyone
+# else's quota - not a concern for this project, but worth knowing why
+# get_remote_address isn't the production-grade choice.
+# ---------------------------------------------------------------------------
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)  # adds Retry-After / X-RateLimit-* headers
+
+# ---------------------------------------------------------------------------
+# API key auth. A single shared-secret key - not per-user accounts/OAuth/JWT
+# - is deliberately the simplest thing that could work: this is a demo API
+# with one consumer (you, via the Streamlit UI or curl), not a multi-tenant
+# product. secrets.compare_digest is used instead of `==` so the comparison
+# takes constant time regardless of how many leading characters match,
+# closing a timing side-channel that would otherwise let an attacker guess
+# the key one byte at a time by measuring response latency.
+# ---------------------------------------------------------------------------
+API_KEY = os.getenv("API_KEY")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def verify_api_key(provided_key: str | None = Depends(api_key_header)):
+    if not API_KEY:
+        # Fail CLOSED: if the server has no key configured, refuse every
+        # protected request rather than silently running unauthenticated.
+        # The opposite default (skip the check when API_KEY is unset) is
+        # the more common footgun - it's easy to forget to set the env var
+        # in a new environment and not notice the API is wide open until
+        # something bad happens.
+        raise HTTPException(status_code=500, detail="Server API key is not configured.")
+    if not provided_key or not secrets.compare_digest(provided_key, API_KEY):
+        raise HTTPException(status_code=401, detail="Missing or invalid API key.")
+    return provided_key
 
 
 # BUG FIX: the original code built ONE Chroma client at import time and
@@ -140,27 +198,56 @@ def populate_database(reset=False):
     }
 
 
+@app.get("/health/")
+async def health_check():
+    """Liveness/readiness probe.
+
+    Deliberately excluded from API-key auth and rate limiting: it's meant to
+    be polled frequently by infrastructure (Docker's HEALTHCHECK in Phase 4,
+    a load balancer, uptime monitoring) that has no API key and shouldn't
+    need one just to ask "are you alive?".
+
+    It reports whether Ollama itself is reachable, not just whether this
+    FastAPI process is running - that distinction matters because uvicorn
+    can be up while Ollama is still starting/loading a model, in which case
+    /populate/ and /query/ would fail even though this process looks fine.
+    """
+    ollama_ok = False
+    try:
+        response = httpx.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=2.0)
+        ollama_ok = response.status_code == 200
+    except httpx.RequestError:
+        ollama_ok = False
+
+    return {
+        "status": "ok" if ollama_ok else "degraded",
+        "ollama_reachable": ollama_ok,
+    }
+
+
 @app.post("/populate/")
-async def populate_db(request: PopulateDBRequest):
+@limiter.limit("5/minute")  # embedding a whole PDF is CPU-heavy; keep it rare
+async def populate_db(request: Request, payload: PopulateDBRequest, _api_key: str = Depends(verify_api_key)):
     """Endpoint to populate the database with documents."""
-    return populate_database(reset=request.reset)
+    return populate_database(reset=payload.reset)
 
 
 # -------------------------------
 # 📌 Query Processing (RAG)
 # -------------------------------
 @app.post("/query/")
-async def query_rag(request: QueryRequest):
+@limiter.limit("15/minute")  # the main hot path, but still LLM-bound - keep modest
+async def query_rag(request: Request, payload: QueryRequest, _api_key: str = Depends(verify_api_key)):
     """Search for relevant documents and generate a response."""
     # Search the DB
-    results = get_db().similarity_search_with_score(request.query_text, k=5)
+    results = get_db().similarity_search_with_score(payload.query_text, k=5)
 
     if not results:
         raise HTTPException(status_code=404, detail="No relevant documents found.")
 
     context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
     prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-    prompt = prompt_template.format(context=context_text, question=request.query_text)
+    prompt = prompt_template.format(context=context_text, question=payload.query_text)
 
     print(f"Generated prompt: {prompt}")
 

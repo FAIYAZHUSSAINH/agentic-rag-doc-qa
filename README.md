@@ -113,8 +113,10 @@ POST /populate/
 ## 🧪 Running Tests
 Run all tests using:
 ```bash
-pytest test.py
+pytest
 ```
+(runs both `test_rag_pipeline.py` - RAG correctness, needs a live Ollama -
+and `test_security.py` - API auth/rate-limit/health, fully mocked and fast)
 
 ---
 
@@ -129,7 +131,8 @@ pytest test.py
 │-- 📜 compare_embeddings.py    # Document similarity comparison
 │-- 📜 load_model.py            # Data pipeline for ChromaDB
 │-- 📜 rag_api.py               # FastAPI server
-│-- 📜 test.py                  # Pytest-based tests
+│-- 📜 test_rag_pipeline.py     # Pytest: RAG correctness (needs live Ollama)
+│-- 📜 test_security.py         # Pytest: API auth/rate-limit/health (mocked)
 │-- 📜 requirements.txt         # Dependencies
 │-- 📜 README.md                # Project Documentation
 ```
