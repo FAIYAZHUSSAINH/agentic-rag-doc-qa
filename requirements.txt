@@ -1,202 +1,66 @@
-pysqlite3-binary
-aiofiles==24.1.0
-aiohappyeyeballs==2.4.6
-aiohttp==3.11.12
-aiosignal==1.3.2
-altair==5.5.0
-annotated-types==0.7.0
-anyio==4.8.0
-asgiref==3.8.1
-async-timeout==4.0.3
-attrs==25.1.0
-backoff==2.2.1
-bcrypt==4.2.1
-beautifulsoup4==4.13.3
-blinker==1.9.0
-blis==1.2.0
-build==1.2.2.post1
-cachetools==5.5.1
-catalogue==2.0.10
-certifi==2025.1.31
-cffi==1.17.1
-chardet==5.2.0
-charset-normalizer==3.4.1
-chroma-hnswlib==0.7.3
-chromadb==0.5.0
-click==8.1.8
-cloudpathlib==0.20.0
-coloredlogs==15.0.1
-confection==0.1.5
-contourpy==1.3.0
-cryptography==44.0.0
-cycler==0.12.1
-cymem==2.0.11
-dataclasses-json==0.6.7
-Deprecated==1.2.18
-distro==1.9.0
-durationpy==0.9
-emoji==2.14.1
-eval_type_backport==0.2.2
-exceptiongroup==1.2.2
-fastai==2.7.18
-fastapi==0.115.8
-fastcore==1.7.29
-fastdownload==0.0.7
-fastprogress==1.0.3
-filelock==3.17.0
-filetype==1.2.0
-flatbuffers==25.1.24
-fonttools==4.56.0
-frozenlist==1.5.0
-fsspec==2025.2.0
-gitdb==4.0.12
-GitPython==3.1.44
-google-auth==2.38.0
-googleapis-common-protos==1.66.0
-greenlet==3.1.1
-grpcio==1.70.0
-h11==0.14.0
-httpcore==1.0.7
-httptools==0.6.4
-httpx==0.27.2
-huggingface-hub==0.28.1
-humanfriendly==10.0
-idna==3.10
-importlib_metadata==8.5.0
-importlib_resources==6.5.2
-iniconfig==2.0.0
-Jinja2==3.1.5
-jiter==0.8.2
-joblib==1.4.2
-jsonpatch==1.33
-jsonpath-python==1.0.6
-jsonpointer==3.0.0
-jsonschema==4.23.0
-jsonschema-specifications==2024.10.1
-kiwisolver==1.4.7
-kubernetes==32.0.0
-langchain==0.2.2
-langchain-community==0.2.3
-langchain-core==0.2.43
-langchain-openai==0.1.8
-langchain-text-splitters==0.2.4
-langcodes==3.5.0
-langdetect==1.0.9
-langsmith==0.1.147
-language_data==1.3.0
-lxml==5.3.0
-marisa-trie==1.2.1
-markdown-it-py==3.0.0
-MarkupSafe==3.0.2
-marshmallow==3.26.1
-matplotlib==3.9.4
-mdurl==0.1.2
-mmh3==5.1.0
-monotonic==1.6
-mpmath==1.3.0
-multidict==6.1.0
-murmurhash==1.0.12
-mypy-extensions==1.0.0
-narwhals==1.26.0
-nest-asyncio==1.6.0
-networkx==3.2.1
-nltk==3.9.1
-numpy==1.26.4
-oauthlib==3.2.2
-onnxruntime==1.19.2
-openai==1.61.1
-opentelemetry-api==1.30.0
-opentelemetry-exporter-otlp-proto-common==1.30.0
-opentelemetry-exporter-otlp-proto-grpc==1.30.0
-opentelemetry-instrumentation==0.51b0
-opentelemetry-instrumentation-asgi==0.51b0
-opentelemetry-instrumentation-fastapi==0.51b0
-opentelemetry-proto==1.30.0
-opentelemetry-sdk==1.30.0
-opentelemetry-semantic-conventions==0.51b0
-opentelemetry-util-http==0.51b0
-orjson==3.10.15
-overrides==7.7.0
-packaging==24.2
-pandas==2.2.3
-pillow==11.1.0
-pluggy==1.5.0
-posthog==3.11.0
-preshed==3.0.9
-propcache==0.2.1
-protobuf==5.29.3
-pyarrow==19.0.0
-pyasn1==0.6.1
-pyasn1_modules==0.4.1
-pycparser==2.22
-pydantic==2.10.6
-pydantic_core==2.27.2
-pydeck==0.9.1
-Pygments==2.19.1
-pyparsing==3.2.1
-pypdf==5.2.0
-PyPika==0.48.9
-pyproject_hooks==1.2.0
-pytest==8.3.4
-python-dateutil==2.9.0.post0
-python-dotenv==1.0.1
-python-iso639==2025.1.28
-python-magic==0.4.27
-pytz==2025.1
-PyYAML==6.0.2
-RapidFuzz==3.12.1
-referencing==0.36.2
-regex==2024.11.6
-requests==2.32.3
-requests-oauthlib==2.0.0
-requests-toolbelt==1.0.0
-rich==13.9.4
-rpds-py==0.22.3
-rsa==4.9
-scikit-learn==1.6.1
-scipy==1.13.1
-shellingham==1.5.4
-six==1.17.0
-smart-open==7.1.0
-smmap==5.0.2
-sniffio==1.3.1
-soupsieve==2.6
-spacy==3.8.3
-spacy-legacy==3.0.12
-spacy-loggers==1.0.5
-SQLAlchemy==2.0.38
-srsly==2.5.1
-starlette==0.45.3
-streamlit==1.42.0
+# -----------------------------------------------------------------------
+# NOTE ON THIS FILE (Phase 1 fix):
+# The original requirements.txt was a raw `pip freeze` of someone's dev
+# environment - 200+ packages, including torch, fastai, spacy, unstructured,
+# and openai, none of which any .py file in this repo actually imports
+# (verified with a grep across all `import`/`from` lines). A frozen
+# environment like that is a portfolio-project red flag: it usually means
+# "it worked on my machine and I never audited why." It also nearly
+# guarantees install failures on a different OS/Python version, since exact
+# pins (e.g. onnxruntime==1.19.2) may not have wheels for your interpreter.
+#
+# This file lists only what's actually imported, with loose (">=") version
+# floors instead of hard pins, so pip can resolve versions that have wheels
+# for whatever Python you're running, rather than failing on an exact old
+# pin. The tradeoff: builds are less byte-for-byte reproducible than a fully
+# pinned freeze. For a portfolio project, "it installs reliably" beats
+# "it's bit-for-bit reproducible" - if you needed the latter (e.g. shipping
+# to prod), you'd pin exact versions with `pip freeze` AFTER confirming this
+# set works, or use a lockfile tool like pip-tools/uv.
+# -----------------------------------------------------------------------
+
+# --- Web framework / API layer ---
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.34,<0.35
+pydantic>=2.10,<3
+
+# --- RAG orchestration ---
+# Pinned to the 0.2.x line (not the current 0.3.x) because the existing code
+# uses pre-refactor import paths like `langchain.vectorstores.Chroma`.
+# LangChain 0.3 split many of these into separate packages and would need
+# import rewrites throughout the repo - out of scope for "extend, don't
+# rewrite" in Phase 1.
+langchain>=0.2.2,<0.3
+langchain-community>=0.2.3,<0.3
+langchain-text-splitters>=0.2.4,<0.3
+
+# --- Vector store (ChromaDB) + PDF parsing ---
+chromadb>=0.5.0,<0.6
+# chromadb's vector index is the C++ extension chroma-hnswlib. Version 0.7.6
+# stopped publishing a prebuilt win_amd64 wheel (source-only), which makes
+# pip try to compile it and fail without MSVC Build Tools installed. 0.7.5
+# still ships a cp312 Windows wheel, so pinning here avoids requiring every
+# contributor to install a C++ toolchain just to `pip install -r`.
+chroma-hnswlib==0.7.5
+pypdf>=5.2.0
+
+# --- Cosine similarity for /compare/ ---
+scikit-learn>=1.6
+
+# --- Demo UI (app.py, reused/extended in Phase 5) ---
+streamlit>=1.42
 streamlit-chat==0.1.1
-sympy==1.13.3
-tabulate==0.9.0
-tenacity==8.5.0
-thinc==8.3.4
-threadpoolctl==3.5.0
-tiktoken==0.7.0
-tokenizers==0.21.0
-toml==0.10.2
-tomli==2.2.1
-torch==2.2.2
-torchvision==0.17.2
-tornado==6.4.2
-tqdm==4.67.1
-typer==0.15.1
-typing-inspect==0.9.0
-typing_extensions==4.12.2
-tzdata==2025.1
-unstructured==0.14.4
-unstructured-client==0.29.0
-urllib3==2.3.0
-uvicorn==0.34.0
-uvloop==0.21.0
-wasabi==1.1.3
-watchfiles==1.0.4
-weasel==0.4.1
-websocket-client==1.8.0
-websockets==14.2
-wrapt==1.17.2
-yarl==1.18.3
-zipp==3.21.0
-zstandard==0.23.0
+
+# --- Misc ---
+tqdm>=4.67
+pytest>=8.3
+
+# chromadb needs SQLite >= 3.35. Some Linux base images (e.g. Debian slim,
+# which we'll use for the Docker image in Phase 4) ship an older system
+# sqlite3 than that. pysqlite3-binary bundles a modern SQLite as a drop-in
+# replacement for those environments. It ships no Windows wheels at all, so
+# it's gated to Linux here - on Windows/macOS dev machines the interpreter's
+# built-in sqlite3 is already new enough, and the code (see the try/except
+# around the pysqlite3 shim in rag_api.py/create_db.py/query.py) skips the
+# swap gracefully when the package isn't installed.
+pysqlite3-binary; sys_platform == "linux"

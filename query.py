@@ -1,7 +1,11 @@
 import argparse
-__import__("pysqlite3")
 import sys
-sys.modules['sqlite3']= sys.modules.pop( 'pysqlite3')
+# Linux-only sqlite3 swap - see requirements.txt comment for the full reason.
+try:
+    __import__("pysqlite3")
+    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+except ImportError:
+    pass
 from langchain.vectorstores.chroma import Chroma
 from langchain.prompts import ChatPromptTemplate
 from langchain_community.llms.ollama import Ollama

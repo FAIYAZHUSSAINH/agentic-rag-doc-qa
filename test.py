@@ -4,7 +4,17 @@ from query import query_rag
 from langchain_community.llms.ollama import Ollama
 from langchain.vectorstores import Chroma
 
-EVAL_PROMPT = "Evaluate the response: Expected: {expected_response}, Actual: {actual_response}"  # Define the prompt
+# BUG FIX: the original prompt just said "Evaluate the response" with no
+# instruction on HOW to answer. Mistral would respond with a free-form
+# paragraph that contained neither the word "true" nor "false", which
+# always tripped the ValueError below - the test was failing regardless of
+# whether the RAG answer was actually correct. Explicitly constraining the
+# output format is a standard "LLM-as-judge" prompting technique: without
+# it, small/local models like Mistral 7B tend to explain instead of comply.
+EVAL_PROMPT = """You are grading whether a chatbot's answer contains the expected information.
+Expected Response: {expected_response}
+Actual Response: {actual_response}
+Does the Actual Response contain the information in the Expected Response? Answer with exactly one word, "true" or "false", and nothing else."""
 
 
 @pytest.fixture(scope="module")

@@ -2,9 +2,26 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import os
 import shutil
-__import__("pysqlite3")
 import sys
-sys.modules['sqlite3']= sys.modules.pop( 'pysqlite3')
+
+# Windows' default console codepage (cp1252) can't encode the emoji used in
+# this file's print() calls (e.g. "✨ Clearing..."), which raises
+# UnicodeEncodeError and 500s the request the moment reset=True is used.
+# Forcing stdout/stderr to UTF-8 fixes this regardless of what codepage the
+# terminal launching uvicorn happens to be in. No-op on Linux/macOS, where
+# UTF-8 is already the default.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+# See requirements.txt for why this is Linux-only: chromadb needs SQLite
+# >= 3.35, older Linux base images (our future Docker image) ship less than
+# that, and pysqlite3-binary is the drop-in fix - but it has no Windows
+# wheel, so we skip the swap when it isn't installed (e.g. local Windows dev).
+try:
+    __import__("pysqlite3")
+    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+except ImportError:
+    pass
 from langchain.vectorstores import Chroma
 from langchain.document_loaders.pdf import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -12,16 +29,30 @@ from langchain.prompts import ChatPromptTemplate
 from langchain_community.llms.ollama import Ollama
 from sklearn.metrics.pairwise import cosine_similarity
 from embedding_function import get_embedding_function
+from create_db import calculate_chunk_ids
 
 # Constants
 CHROMA_PATH = "chroma"
-DATA_PATH = "data"
+# BUG FIX: this was "data", but the PDFs that ship with the repo live in
+# docs/ (create_db.py has always pointed there). With "data" the loader
+# pointed at a directory that doesn't exist, so /populate/ silently produced
+# zero chunks. Matching create_db.py's DATA_PATH here.
+DATA_PATH = "docs"
 
 # Initialize FastAPI app
 app = FastAPI()
 
-# Load the vector database
-db = Chroma(persist_directory=CHROMA_PATH, embedding_function=get_embedding_function())
+
+# BUG FIX: the original code built ONE Chroma client at import time and
+# reused it for the app's entire lifetime. That breaks /populate/ with
+# reset=True: clear_database() shutil.rmtree's the chroma/ directory out
+# from under a client that still has it open, and on Windows deleting a
+# file that's open in the same process either fails outright
+# (PermissionError) or leaves the client pointed at now-nonexistent files.
+# Building a fresh client per call (matching the pattern already used in
+# create_db.py and query.py) avoids holding a long-lived handle at all.
+def get_db() -> Chroma:
+    return Chroma(persist_directory=CHROMA_PATH, embedding_function=get_embedding_function())
 
 PROMPT_TEMPLATE = """
 Answer the question based only on the following context:
@@ -84,9 +115,29 @@ def populate_database(reset=False):
 
     documents = load_documents()
     chunks = split_documents(documents)
-    db.add_documents(chunks)
-    db.persist()
-    return {"message": f"Database populated with {len(chunks)} chunks"}
+    db = get_db()  # built AFTER clear_database(), never a stale handle
+
+    # BUG FIX: the original code called db.add_documents(chunks) with no ids,
+    # so Chroma auto-assigned a random UUID to every chunk on every call.
+    # Calling /populate/ twice (e.g. after uploading a second PDF) duplicated
+    # every chunk that was already in the DB, silently degrading retrieval
+    # quality (the same passage shows up multiple times, crowding out other
+    # real matches in the top-k results). create_db.py already solved this
+    # with content-derived, deterministic ids ("source:page:chunk_index") -
+    # reusing that here instead of inventing a second dedup scheme.
+    chunks_with_ids = calculate_chunk_ids(chunks)
+    existing_ids = set(db.get(include=[])["ids"])
+    new_chunks = [c for c in chunks_with_ids if c.metadata["id"] not in existing_ids]
+
+    if new_chunks:
+        new_ids = [c.metadata["id"] for c in new_chunks]
+        db.add_documents(new_chunks, ids=new_ids)
+        db.persist()
+
+    return {
+        "message": f"Database populated with {len(new_chunks)} new chunks "
+                    f"({len(chunks_with_ids) - len(new_chunks)} already existed)"
+    }
 
 
 @app.post("/populate/")
@@ -102,7 +153,7 @@ async def populate_db(request: PopulateDBRequest):
 async def query_rag(request: QueryRequest):
     """Search for relevant documents and generate a response."""
     # Search the DB
-    results = db.similarity_search_with_score(request.query_text, k=5)
+    results = get_db().similarity_search_with_score(request.query_text, k=5)
 
     if not results:
         raise HTTPException(status_code=404, detail="No relevant documents found.")
@@ -137,6 +188,7 @@ def get_embedding(text):
 async def compare_documents(request: CompareRequest):
     """Compare two documents based on embeddings."""
 
+    db = get_db()
     results_1 = db.similarity_search(request.query_1, k=1)
     results_2 = db.similarity_search(request.query_2, k=1)
 

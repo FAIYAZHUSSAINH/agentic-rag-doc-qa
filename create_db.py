@@ -5,9 +5,20 @@ from langchain.document_loaders.pdf import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema.document import Document
 from embedding_function import get_embedding_function
-__import__("pysqlite3")
 import sys
-sys.modules['sqlite3']= sys.modules.pop( 'pysqlite3')
+
+# Force UTF-8 stdout so the emoji in this file's print() calls don't crash
+# with UnicodeEncodeError under Windows' default cp1252 console codepage.
+# See the matching comment in rag_api.py for the full explanation.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+# Linux-only sqlite3 swap - see requirements.txt comment for the full reason.
+try:
+    __import__("pysqlite3")
+    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+except ImportError:
+    pass
 from langchain.vectorstores.chroma import Chroma
 from tqdm import tqdm
 import streamlit as st
